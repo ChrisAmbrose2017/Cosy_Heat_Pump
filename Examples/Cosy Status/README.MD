@@ -13,6 +13,14 @@ The script is intended for **learning, monitoring, and reference purposes only**
 
 ---
 
+## Example Output
+
+Here is a screenshot of the script output in Python IDLE:
+
+![Example Output](example_output.png)
+
+---
+
 ## 🔐 Security & Privacy
 
 **Important:** The script uses sensitive account information to authenticate. By default, it contains **empty placeholders**, making it safe to share publicly.
