@@ -83,7 +83,11 @@ query {{
           minimum {{ value unit }}
           maximum {{ value unit }}
         }}
-        allowableRange {{
+        allowableMinimumTemperatureRange  {{
+          minimum {{ value unit }}
+          maximum {{ value unit }}
+        }}
+        allowableMaximumTemperatureRange  {{
           minimum {{ value unit }}
           maximum {{ value unit }}
         }}
@@ -151,7 +155,8 @@ print(f"  - Flow Temp Range:   {fmt_kw(hft['allowableRange']['minimum'])} to {fm
 wc = hp['weatherCompensation']
 print(f"  - Weather Comp: {fmt_bool(wc['enabled'])}")
 print(f"  - WC Current Range:  {fmt_kw(wc['currentRange']['minimum'])} to {fmt_kw(wc['currentRange']['maximum'])}")
-print(f"  - WC Allowed Range:  {fmt_kw(wc['allowableRange']['minimum'])} to {fmt_kw(wc['allowableRange']['maximum'])}")
+print(f"  - WC Allowed Minimum Range:  {fmt_kw(wc['allowableMinimumTemperatureRange']['minimum'])} to {fmt_kw(wc['allowableMinimumTemperatureRange']['maximum'])}")
+print(f"  - WC Allowed Maximum Range:  {fmt_kw(wc['allowableMinimumTemperatureRange']['minimum'])} to {fmt_kw(wc['allowableMinimumTemperatureRange']['maximum'])}")
 
 print("\n⚡ LIVE PERFORMANCE")
 live = result["octoHeatPumpLivePerformance"]
