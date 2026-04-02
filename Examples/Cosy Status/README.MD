@@ -16,7 +16,7 @@ The script is intended for **learning, monitoring, and reference purposes only**
 
 ## API Endpoint Migration
 
-As of 2025, Octopus Energy migrated heat pump queries to a new backend endpoint. This script uses a **two-endpoint authentication pattern**:
+As of 2026, Octopus Energy migrated heat pump queries to a new backend endpoint. This script uses a **two-endpoint authentication pattern**:
 
 1. **Token acquisition** via the original endpoint: `https://api.octopus.energy/v1/graphql/`
 2. **All data queries** via the new endpoint: `https://api.backend.octopus.energy/v1/graphql/`
