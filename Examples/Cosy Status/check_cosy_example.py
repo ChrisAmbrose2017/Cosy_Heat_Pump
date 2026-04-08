@@ -107,6 +107,13 @@ query {{
     energyInput {{ value unit }}
     readAt
   }}
+  heatPumpLivePerformance(accountNumber: "{account_id}", euid: "{euid}") {{
+    readAt
+    coefficientOfPerformance
+    powerInput {{ value unit }}
+    heatOutput {{ value unit }}
+    outdoorTemperature {{ value unit }}
+  }}
 }}
 '''
 
@@ -210,16 +217,22 @@ for label, nodes in perf_results.items():
         continue
     
     if label == "LIVE":
-        latest = nodes[-1]
-        energy_in = float(latest['energyInput']['value']) if latest.get('energyInput') else 0
-        energy_out = float(latest['energyOutput']['value']) if latest.get('energyOutput') else 0
-        cop = energy_out / energy_in if energy_in > 0 else 0
-        print(f"     - COP (calculated): {cop:.2f}")
-        print(f"     - Outdoor Temp:     {fmt_kw(latest.get('outdoorTemperature'))}")
-        print(f"     - Energy Output:    {fmt_kw(latest.get('energyOutput'))}")
-        print(f"     - Energy Input:     {fmt_kw(latest.get('energyInput'))}")
-        print(f"     - Read At:          {latest['startAt']}")
+        # LIVE grouping returns outdoor temperature only — energy values are not available
         print(f"     - ({len(nodes)} data points in last 5 min)")
+        for i, entry in enumerate(nodes):
+            print(f"       [{i+1}] Outdoor: {fmt_kw(entry.get('outdoorTemperature'))} | Read At: {entry['startAt']}")
+        # COP and energy derived from last Today (DAY) hourly bucket
+        today_nodes = perf_results.get("Today")
+        if today_nodes:
+            latest_day = today_nodes[-1]
+            e_in = float(latest_day['energyInput']['value']) if latest_day.get('energyInput') else 0
+            e_out = float(latest_day['energyOutput']['value']) if latest_day.get('energyOutput') else 0
+            cop = e_out / e_in if e_in > 0 else 0
+            print(f"     - COP (current hour):   {cop:.2f}  [{latest_day['startAt']} → {latest_day['endAt']}]")
+            print(f"     - Energy Output:        {fmt_kw(latest_day.get('energyOutput'))}")
+            print(f"     - Energy Input:         {fmt_kw(latest_day.get('energyInput'))}")
+        else:
+            print("     ⚠️ No Today data available for COP")
     else:
         total_in = 0
         total_out = 0
@@ -242,6 +255,19 @@ for label, nodes in perf_results.items():
                 node_cop = e_out / e_in if e_in > 0 else 0
                 outdoor = fmt_kw(node.get('outdoorTemperature'))
                 print(f"       {node['startAt']} → {node['endAt']}  |  In: {e_in:.2f}  Out: {e_out:.2f}  COP: {node_cop:.2f}  Outdoor: {outdoor}")
+
+print("\n⚡ LIVE PERFORMANCE")
+live = result["heatPumpLivePerformance"]
+if live:
+    cop_live = float(live['coefficientOfPerformance']) if live.get('coefficientOfPerformance') is not None else None
+    cop_str = f"{cop_live:.2f}" if cop_live is not None else "N/A"
+    print(f"  - COP:              {cop_str}")
+    print(f"  - Power Input:      {fmt_kw(live.get('powerInput'))}")
+    print(f"  - Heat Output:      {fmt_kw(live.get('heatOutput'))}")
+    print(f"  - Outdoor Temp:     {fmt_kw(live.get('outdoorTemperature'))}")
+    print(f"  - Read At:          {live['readAt']}")
+else:
+    print("  ⚠️ No live data available")
 
 print("\n📊 LIFETIME PERFORMANCE")
 lifetime = result["heatPumpLifetimePerformance"]

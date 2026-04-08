@@ -32,7 +32,7 @@ All heat pump queries have dropped the `octo` prefix:
 | `octoHeatPumpControllerStatus` | `heatPumpControllerStatus` |
 | `octoHeatPumpControllerConfiguration` | `heatPumpControllerConfiguration` |
 | `octoHeatPumpLifetimePerformance` | `heatPumpLifetimePerformance` |
-| `octoHeatPumpLivePerformance` | Replaced by `heatPumpTimeSeriesPerformance` |
+| `octoHeatPumpLivePerformance` | `heatPumpLivePerformance` |
 
 The new `heatPumpTimeSeriesPerformance` query supports multiple groupings (`LIVE`, `DAY`, `WEEK`, `MONTH`) and requires COP to be calculated client-side from `energyOutput / energyInput`.
 
