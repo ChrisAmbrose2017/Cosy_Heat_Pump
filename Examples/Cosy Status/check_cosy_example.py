@@ -1,12 +1,17 @@
 import requests
+import json
+import os
 from datetime import datetime, timedelta, timezone
 
 # === Settings ===
 VERBOSE = False  # Set to True to show per-period breakdown in performance data
 
-# === Your login credentials and device info ===
-email = "" # Octopus login email
-password = "" # Octopus login password
+# === Your Octopus account details ===
+# Provide either API key OR email+password.
+# API key is available at: https://octopus.energy/dashboard/developer/
+api_key = "" # Octopus API key: sk_live_xxxxxxxxxxxxxxxx  (leave blank to use email/password)
+email = ""   # Octopus login email    (leave blank if using API key)
+password = "" # Octopus login password (leave blank if using API key)
 account_id = "" # Octopus account ID: A-xxxxxxxx
 euid = "" # Octopus EUID xxxxxxxxxxxxxxxx
 
@@ -14,32 +19,183 @@ euid = "" # Octopus EUID xxxxxxxxxxxxxxxx
 graphql_url = "https://api.backend.octopus.energy/v1/graphql/"
 old_graphql_url = "https://api.octopus.energy/v1/graphql/"
 
-# === Step 1: Get JWT token via old endpoint, used to auth against new endpoint ===
-token_query = f'''
+# === Token cache file (sits alongside this script) ===
+TOKEN_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".token_cache.json")
+
+# How many minutes before JWT expiry to proactively refresh (matches Home Assistant behaviour)
+TOKEN_REFRESH_BUFFER_MINUTES = 5
+
+# JWT tokens expire after 1 hour; treat cached token as expiring after this long if no expiry stored
+JWT_LIFETIME_HOURS = 1
+
+
+def load_token_cache():
+    """Load cached token data from disk. Returns dict or None."""
+    if not os.path.exists(TOKEN_CACHE_FILE):
+        return None
+    try:
+        with open(TOKEN_CACHE_FILE, "r") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def save_token_cache(token, refresh_token, refresh_expires_in, token_obtained_at):
+    """Persist token data to disk."""
+    cache = {
+        "token": token,
+        "refresh_token": refresh_token,
+        "refresh_expires_in": refresh_expires_in,  # Unix timestamp (int) from API
+        "token_obtained_at": token_obtained_at,     # ISO string (UTC)
+    }
+    try:
+        with open(TOKEN_CACHE_FILE, "w") as f:
+            json.dump(cache, f, indent=2)
+    except OSError as e:
+        print(f"⚠️  Could not save token cache: {e}")
+
+
+def parse_token_response(data):
+    """Extract token fields from a raw obtainKrakenToken response dict."""
+    tok = data["data"]["obtainKrakenToken"]
+    token = tok["token"]
+    refresh_token = tok.get("refreshToken")
+    refresh_expires_in = tok.get("refreshExpiresIn")  # Unix timestamp (int)
+    return token, refresh_token, refresh_expires_in
+
+
+def fetch_token_with_credentials():
+    """Obtain a fresh JWT using API key (preferred) or email+password. Returns (token, refresh_token, refresh_expires_in) or raises."""
+    if api_key:
+        input_fields = f'APIKey: "{api_key}"'
+        method = "API key"
+    elif email and password:
+        input_fields = f'email: "{email}", password: "{password}"'
+        method = "email/password"
+    else:
+        raise RuntimeError("No credentials configured: set api_key, or both email and password.")
+
+    query = f'''
 mutation {{
   obtainKrakenToken(input: {{
-    email: "{email}", 
-    password: "{password}"
+    {input_fields}
   }}) {{
     token
+    refreshToken
+    refreshExpiresIn
   }}
 }}
 '''
+    response = requests.post(
+        old_graphql_url,
+        json={"query": query},
+        headers={"Content-Type": "application/json"},
+        timeout=10,
+    )
+    data = response.json()
+    if "errors" in data:
+        raise RuntimeError(f"Auth error ({method}): {data['errors']}")
+    return parse_token_response(data)
 
-response = requests.post(old_graphql_url, json={"query": token_query}, headers={"Content-Type": "application/json"})
-data = response.json()
 
-if "errors" in data:
-    print("❌ Failed to get token:")
-    print(data)
-    exit()
+def fetch_token_with_refresh(refresh_token):
+    """Obtain a fresh JWT using an existing refresh token. Returns (token, refresh_token, refresh_expires_in) or raises."""
+    query = f'''
+mutation {{
+  obtainKrakenToken(input: {{
+    refreshToken: "{refresh_token}"
+  }}) {{
+    token
+    refreshToken
+    refreshExpiresIn
+  }}
+}}
+'''
+    response = requests.post(
+        old_graphql_url,
+        json={"query": query},
+        headers={"Content-Type": "application/json"},
+        timeout=10,
+    )
+    data = response.json()
+    if "errors" in data:
+        raise RuntimeError(f"Refresh error: {data['errors']}")
+    return parse_token_response(data)
 
-jwt_token = data["data"]["obtainKrakenToken"]["token"]
+
+def get_valid_token():
+    """
+    Return a valid JWT, using the cache where possible.
+    Strategy (mirrors Home Assistant OctopusEnergy integration):
+      1. If cached JWT is still valid (with TOKEN_REFRESH_BUFFER_MINUTES buffer), use it.
+      2. If JWT is expiring soon but refresh token is still valid, silently refresh using it.
+      3. If refresh token is also expired, fall back to API key.
+      4. If the server is unreachable for (2) or (3), use the stale cached JWT with a warning
+         rather than failing completely.
+    """
+    now = datetime.now(timezone.utc)
+    cache = load_token_cache()
+
+    if cache:
+        # Determine when the cached JWT expires
+        obtained_at = datetime.fromisoformat(cache["token_obtained_at"])
+        jwt_expires_at = obtained_at + timedelta(hours=JWT_LIFETIME_HOURS)
+        token_still_good = (jwt_expires_at - timedelta(minutes=TOKEN_REFRESH_BUFFER_MINUTES)) > now
+
+        if token_still_good:
+            print("✅ Using cached token (still valid).\n")
+            return cache["token"]
+
+        # JWT is expiring — try refresh token first
+        refresh_token = cache.get("refresh_token")
+        refresh_expires_in = cache.get("refresh_expires_in")
+        refresh_still_good = (
+            refresh_token is not None
+            and refresh_expires_in is not None
+            and datetime.fromtimestamp(refresh_expires_in, tz=timezone.utc) > now
+        )
+
+        if refresh_still_good:
+            try:
+                print("🔄 JWT expiring — refreshing via refresh token...")
+                token, new_refresh_token, new_refresh_expires_in = fetch_token_with_refresh(refresh_token)
+                save_token_cache(token, new_refresh_token, new_refresh_expires_in, now.isoformat())
+                print("✅ Token refreshed successfully.\n")
+                return token
+            except Exception as e:
+                print(f"⚠️  Refresh token failed ({e}), falling back to credentials...")
+
+        # Refresh token expired or refresh failed — try full login
+        try:
+            print("🔑 Re-authenticating with credentials...")
+            token, new_refresh_token, new_refresh_expires_in = fetch_token_with_credentials()
+            save_token_cache(token, new_refresh_token, new_refresh_expires_in, now.isoformat())
+            print("✅ Token retrieved successfully.\n")
+            return token
+        except Exception as e:
+            # Server unreachable — use stale token as a last resort
+            if cache.get("token"):
+                print(f"⚠️  Server unreachable ({e}). Using stale cached token — results may be outdated.\n")
+                return cache["token"]
+            raise RuntimeError(f"Cannot obtain a token and no cached token available: {e}") from e
+
+    # No cache at all — must authenticate from scratch
+    try:
+        print("🔑 No cached token found — authenticating with credentials...")
+        token, refresh_token, refresh_expires_in = fetch_token_with_credentials()
+        save_token_cache(token, refresh_token, refresh_expires_in, now.isoformat())
+        print("✅ Token retrieved successfully.\n")
+        return token
+    except Exception as e:
+        raise RuntimeError(f"Cannot obtain a token: {e}") from e
+
+
+# === Step 1: Get a valid JWT (from cache or fresh login) ===
+jwt_token = get_valid_token()
 headers = {
     "Content-Type": "application/json",
     "Authorization": jwt_token,
 }
-print("✅ Token retrieved successfully.\n")
 
 # === Step 2: Query status, config, lifetime performance ===
 status_query = f'''
